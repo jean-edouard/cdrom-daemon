@@ -42,11 +42,15 @@ static int cdrom_vdev_of_domid(int domid)
     for (i = 0; i < count; ++i) {
       vdev = strtol(devs[i], NULL, 10);
       type = xenstore_be_read(XBT_NULL, domid, vdev, "device-type");
-      if (type != NULL && !strcmp(type, "cdrom")) {
-	/* CDROM found! */
-	res = vdev;
-	break;
+      if (type == NULL)
+        continue;
+      if (!strcmp(type, "cdrom")) {
+        /* CDROM found! */
+        res = vdev;
+        free(type);
+        break;
       }
+      free(type);
     }
     free(devs);
   }
@@ -63,8 +67,10 @@ static int cdrom_tap_minor_of_vdev(int domid, int vdev)
     return -1;
 
   tmp = xenstore_be_read(XBT_NULL, domid, vdev, "params");
-  if (tmp != NULL)
+  if (tmp != NULL) {
     tap_minor = strtol(tmp + 24, NULL, 10);
+    free(tmp);
+  }
 
   return tap_minor;
 }
@@ -83,14 +89,14 @@ static unsigned int cdrom_count_and_print(int tap_minor, int max, bool print)
       domid = strtol(domids[i], NULL, 10);
       tm = cdrom_tap_minor_of_vdev(domid, cdrom_vdev_of_domid(domid));
       if (print)
-	printf("CDROM for domid %d: %d\n", domid, tm);
+        printf("CDROM for domid %d: %d\n", domid, tm);
       if (tm == tap_minor)
-	res++;
+        res++;
       if (res >= max)
-	break;
+        break;
     }
+    free(domids);
   }
-  free(domids);
 
   return res;
 }
@@ -98,6 +104,7 @@ static unsigned int cdrom_count_and_print(int tap_minor, int max, bool print)
 static void recreate(int domid, int vdev, const char *params, const char *type, const char *physical, const char *tapdisk_params)
 {
   xs_transaction_t trans;
+  char *tmp;
 
   /* Kill the current vdev */
   while (1) {
@@ -108,7 +115,7 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
 
     if (xs_transaction_end(xs_handle, trans, false) == false) {
       if (errno == EAGAIN)
-	continue;
+        continue;
     }
     break;
   }
@@ -116,9 +123,19 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
   /* TODO: should be a watch for states to go to 6 */
   while (1) {
     sleep(1);
-    if (!strcmp(xenstore_be_read(XBT_NULL, domid, vdev, "state"), "6") &&
-	!strcmp(xenstore_fe_read(XBT_NULL, domid, vdev, "state"), "6"))
-      break;
+    tmp = xenstore_be_read(XBT_NULL, domid, vdev, "state");
+    if (strcmp(tmp, "6")) {
+      free(tmp);
+      continue;
+    }
+    free(tmp);
+    tmp = xenstore_fe_read(XBT_NULL, domid, vdev, "state");
+    if (strcmp(tmp, "6")) {
+      free(tmp);
+      continue;
+    }
+    free(tmp);
+    break;
   }
 
   /* Remove all traces of the vdev */
@@ -130,7 +147,7 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
 
     if (xs_transaction_end(xs_handle, trans, false) == false) {
       if (errno == EAGAIN)
-	continue;
+        continue;
     }
     break;
   }
@@ -163,7 +180,7 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
 
     if (xs_transaction_end(xs_handle, trans, false) == false) {
       if (errno == EAGAIN)
-	continue;
+        continue;
     }
     break;
   }
@@ -183,7 +200,7 @@ static void cdrom_change(int domid, int vdev, const char *params, const char *ty
 
     if (xs_transaction_end(xs_handle, trans, false) == false) {
       if (errno == EAGAIN)
-	continue;
+        continue;
     }
     break;
   }
@@ -303,7 +320,7 @@ bool blktap_change_iso(const char *path, int domid)
     {
       /* Destroy previous tapdev? */
       if (count == 0)
-	cdrom_tap_destroy(tap_minor);
+        cdrom_tap_destroy(tap_minor);
       /* Switch to the one we just found */
       snprintf(tpath, sizeof(tpath), "/dev/xen/blktap-2/tapdev%d", existing);
       snprintf(phys, sizeof(phys), "fe:%d", existing);
