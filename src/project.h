@@ -68,6 +68,8 @@
 #include <sys/int_types.h>
 #endif
 
+#include <errno.h>
+
 #include <syslog.h>
 #include <xenstore.h>
 

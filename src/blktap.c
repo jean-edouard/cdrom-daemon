@@ -219,8 +219,10 @@ static bool cdrom_tap_close_and_load(int tap_minor, const char *params, bool clo
     }
     tmp++;
   }
-  if (tap == NULL)
+  if (tap == NULL) {
+    tap_ctl_free_list(list);
     return false;
+  }
   if (close) {
     /* The last argument should be != 0 for force, but it's not supported */
     tap_ctl_close(tap->id, tap_minor, 0);
@@ -244,8 +246,10 @@ static bool cdrom_tap_destroy(int tap_minor)
     }
     tmp++;
   }
-  if (tap == NULL)
+  if (tap == NULL) {
+    tap_ctl_free_list(list);
     return false;
+  }
   tap_ctl_destroy(tap->id, tap_minor);
   tap_ctl_free_list(list);
 
@@ -295,6 +299,8 @@ bool blktap_change_iso(const char *path, int domid)
 
   /* Get the virtual cdrom vdev and tap minor for the domid */
   vdev = cdrom_vdev_of_domid(domid);
+  if (vdev == -1)
+    return false;
   tap_minor = cdrom_tap_minor_of_vdev(domid, vdev);
 
   /* If we don't have a virtual drive, fail. */

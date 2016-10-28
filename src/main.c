@@ -30,7 +30,6 @@
 
 int
 main() {
-  int ret = 0;
   struct timeval tv;
   fd_set readfds;
   fd_set writefds;
@@ -58,10 +57,10 @@ main() {
     tv.tv_sec = 0;
     tv.tv_usec = 1000;
     nfds = xcdbus_pre_select(g_xcbus, 0, &readfds, &writefds, &exceptfds);
-    select(nfds, &readfds, &writefds, &exceptfds, &tv);
+    if (select(nfds, &readfds, &writefds, &exceptfds, &tv) < 0)
+      return errno;
     xcdbus_post_select(g_xcbus, 0, &readfds, &writefds, &exceptfds);
-    /* TODO: watch xenstore for new (domains and) vbds */
   }
 
-  return ret;
+  return 0;
 }
