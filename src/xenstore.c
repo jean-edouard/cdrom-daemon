@@ -72,6 +72,15 @@ static char *xenstore_read(xs_transaction_t trans, char *path)
   return xs_read(xs_handle, trans, path, NULL);
 }
 
+char *xenstore_dom_read(xs_transaction_t trans, int domid, char *node)
+{
+  char path[256];
+
+  snprintf(path, sizeof(path), "/local/domain/%d/%s", domid, node);
+
+  return xenstore_read(trans, path);
+}
+
 char *xenstore_be_read(xs_transaction_t trans, int domid, int vdev, char *node)
 {
   char path[256];
@@ -88,6 +97,42 @@ char *xenstore_fe_read(xs_transaction_t trans, int domid, int vdev, char *node)
   snprintf(path, sizeof(path), VBD_FRONTEND_FORMAT "/%s", domid, vdev, node);
 
   return xenstore_read(trans, path);
+}
+
+int xenstore_be_watch(int domid, int vdev, char *node)
+{
+  char path[256];
+
+  snprintf(path, sizeof(path), VBD_BACKEND_FORMAT "/%s", domid, vdev, node);
+
+  return xs_watch(xs_handle, path, path);
+}
+
+int xenstore_fe_watch(int domid, int vdev, char *node)
+{
+  char path[256];
+
+  snprintf(path, sizeof(path), VBD_FRONTEND_FORMAT "/%s", domid, vdev, node);
+
+  return xs_watch(xs_handle, path, path);
+}
+
+int xenstore_be_unwatch(int domid, int vdev, char *node)
+{
+  char path[256];
+
+  snprintf(path, sizeof(path), VBD_BACKEND_FORMAT "/%s", domid, vdev, node);
+
+  return xs_unwatch(xs_handle, path, path);
+}
+
+int xenstore_fe_unwatch(int domid, int vdev, char *node)
+{
+  char path[256];
+
+  snprintf(path, sizeof(path), VBD_FRONTEND_FORMAT "/%s", domid, vdev, node);
+
+  return xs_unwatch(xs_handle, path, path);
 }
 
 bool xenstore_be_destroy(xs_transaction_t trans, int domid, int vdev)

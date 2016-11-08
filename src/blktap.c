@@ -75,25 +75,37 @@ static int cdrom_tap_minor_of_vdev(int domid, int vdev)
   return tap_minor;
 }
 
-static unsigned int cdrom_count_and_print(int tap_minor, int max, bool print)
+static bool cdrom_tapdev_is_shared(int tap_minor, int domid)
 {
   char **domids;
   unsigned int i, count;
-  int tm, domid;
-  unsigned int res = 0;
+  int vdev, tm, d;
+  char *target;
+  bool res = false;
 
-  /* Find the CDROM virtual device for the given domid */
   domids = xs_directory(xs_handle, XBT_NULL, "/local/domain/0/backend/vbd", &count);
   if (domids) {
     for (i = 0; i < count; ++i) {
-      domid = strtol(domids[i], NULL, 10);
-      tm = cdrom_tap_minor_of_vdev(domid, cdrom_vdev_of_domid(domid));
-      if (print)
-        printf("CDROM for domid %d: %d\n", domid, tm);
-      if (tm == tap_minor)
-        res++;
-      if (res >= max)
+      d = strtol(domids[i], NULL, 10);
+      /* Skip if it's just us */
+      if (d == domid)
+	continue;
+      target = xenstore_dom_read(XBT_NULL, d, "target");
+      /* Skip if it's our stubdom */
+      if (target != NULL) {
+	if (strtol(target, NULL, 10) == domid) {
+	  free(target);
+	  continue;
+	}
+	free(target);
+      }
+      /* In any other case, if the tapdisk matches, we are true */
+      vdev = cdrom_vdev_of_domid(d);
+      tm = cdrom_tap_minor_of_vdev(d, vdev);
+      if (tm == tap_minor) {
+	res = true;
         break;
+      }
     }
     free(domids);
   }
@@ -101,28 +113,31 @@ static unsigned int cdrom_count_and_print(int tap_minor, int max, bool print)
   return res;
 }
 
-static void recreate(int domid, int vdev, const char *params, const char *type, const char *physical, const char *tapdisk_params)
+static void cdrom_wait_for_disconnect(int domid, int vdev)
 {
-  xs_transaction_t trans;
+  int fd;
+  unsigned int len;
+  fd_set set;
+  struct timeval tv;
+  char **watch_paths;
   char *tmp;
 
-  /* Kill the current vdev */
+  xenstore_be_watch(domid, vdev, "state");
+  xenstore_fe_watch(domid, vdev, "state");
+  fd = xs_fileno(xs_handle);
   while (1) {
-    trans = xs_transaction_start(xs_handle);
-
-    xenstore_be_write(trans, domid, vdev, "online", "0");
-    xenstore_be_write(trans, domid, vdev, "state",  "5");
-
-    if (xs_transaction_end(xs_handle, trans, false) == false) {
-      if (errno == EAGAIN)
-        continue;
+    /* Wait for state changes or 1 second */
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    FD_ZERO(&set);
+    FD_SET(fd, &set);
+    select(fd + 1, &set, NULL, NULL, &tv);
+    if (FD_ISSET(fd, &set)) {
+      watch_paths = xs_read_watch(xs_handle, &len);
+      if (watch_paths != NULL)
+	free(watch_paths);
     }
-    break;
-  }
-
-  /* TODO: should be a watch for states to go to 6 */
-  while (1) {
-    sleep(1);
+    /* Either way, check the states and return if they're disconnected */
     tmp = xenstore_be_read(XBT_NULL, domid, vdev, "state");
     if (strcmp(tmp, "6")) {
       free(tmp);
@@ -136,6 +151,49 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
     }
     free(tmp);
     break;
+  }
+  xenstore_be_unwatch(domid, vdev, "state");
+  xenstore_fe_unwatch(domid, vdev, "state");  
+}
+
+/* Destroy an existing blkback and recreate it based on a different tapdisk */
+static void recreate_single(int domid,
+			    int vdev,
+			    const char *tapdisk_params,
+			    const char *type,
+			    const char *physical,
+			    const char *params)
+{
+  xs_transaction_t trans;
+  char *tmp;
+  bool is_connected = false;
+
+  /* Get the current backend state */
+  tmp = xenstore_be_read(XBT_NULL, domid, vdev, "state");
+  if (tmp != NULL) {
+    if (strtol(tmp, NULL, 10) == 4)
+      is_connected = true;
+    free(tmp);
+  }
+
+  /* If the backend is connected, we need to first disconnect it */
+  if (is_connected) {
+    /* Kill the current vdev */
+    while (1) {
+      trans = xs_transaction_start(xs_handle);
+
+      xenstore_be_write(trans, domid, vdev, "online", "0");
+      xenstore_be_write(trans, domid, vdev, "state",  "5");
+
+      if (xs_transaction_end(xs_handle, trans, false) == false) {
+	if (errno == EAGAIN)
+	  continue;
+      }
+      break;
+    }
+
+    /* Wait for both the backend and the frontend to be disconnected */
+    cdrom_wait_for_disconnect(domid, vdev);
   }
 
   /* Remove all traces of the vdev */
@@ -186,10 +244,39 @@ static void recreate(int domid, int vdev, const char *params, const char *type, 
   }
 }
 
-static void cdrom_change(int domid, int vdev, const char *params, const char *type, const char *new_physical)
+static void recreate(int domid,
+		     int vdev,
+		     const char *params,
+		     const char *type,
+		     const char *physical,
+		     const char *tapdisk_params)
+{
+  int stubdom = -1;
+  char *tmp;
+
+  /* Get stubdom id if any */
+  tmp = xenstore_dom_read(XBT_NULL, domid, "image/device-model-domid");
+  if (tmp != NULL) {
+    stubdom = strtol(tmp, NULL, 10);
+    free(tmp);
+  }
+
+  /* Change the cdrom for the domain and maybe its stubdom */
+  recreate_single(domid, vdev, params, type, physical, tapdisk_params);
+  if (stubdom != -1)
+    recreate_single(stubdom, vdev, params, type, physical, tapdisk_params);
+}
+
+/* Change the iso used by a tapdisk, "" to eject */
+static void cdrom_change_single(int domid,
+				int vdev,
+				const char *params,
+				const char *type,
+				const char *new_physical,
+				const char *tapdisk_params)
 {
   xs_transaction_t trans;
-
+  
   while (1) {
     trans = xs_transaction_start(xs_handle);
 
@@ -197,6 +284,7 @@ static void cdrom_change(int domid, int vdev, const char *params, const char *ty
     xenstore_be_write(trans, domid, vdev, "type",   type);
     if (new_physical != NULL)
       xenstore_be_write(trans, domid, vdev, "physical-device", new_physical);
+    xenstore_be_write(trans, domid, vdev, "tapdisk-params",  tapdisk_params);
 
     if (xs_transaction_end(xs_handle, trans, false) == false) {
       if (errno == EAGAIN)
@@ -204,6 +292,29 @@ static void cdrom_change(int domid, int vdev, const char *params, const char *ty
     }
     break;
   }
+}
+
+static void cdrom_change(int domid,
+			 int vdev,
+			 const char *params,
+			 const char *type,
+			 const char *new_physical,
+			 const char *tapdisk_params)
+{
+  int stubdom = -1;
+  char *tmp;
+
+  /* Get stubdom id if any */
+  tmp = xenstore_dom_read(XBT_NULL, domid, "image/device-model-domid");
+  if (tmp != NULL) {
+    stubdom = strtol(tmp, NULL, 10);
+    free(tmp);
+  }
+
+  /* Change the cdrom for the domain and maybe its stubdom */
+  cdrom_change_single(domid, vdev, params, type, new_physical, tapdisk_params);
+  if (stubdom != -1)
+    cdrom_change_single(stubdom, vdev, params, type, new_physical, tapdisk_params);
 }
 
 static bool cdrom_tap_close_and_load(int tap_minor, const char *params, bool close)
@@ -294,8 +405,12 @@ static int find_tap_with_path(const char *path)
  */
 bool blktap_change_iso(const char *path, int domid)
 {
-  int tap_minor, count, vdev, existing;
-  char tpath[256], phys[16], *new_tpath = NULL;
+  int tap_minor, vdev, existing;
+  char tapdisk_params[256]; /**< Tapdisk params, e.g: "aio:/storage/isos/null.iso" */
+  char params[256];    /**< Tapdev path,    e.g. "/dev/xen/blktap-2/tapdev0" */
+  char phys[16];            /**< Physical path,  e.g. "fe:0" */
+  char *new_params = NULL;  /**< Tapdev path,    e.g. "/dev/xen/blktap-2/tapdev1" */
+  bool shared;
 
   /* Get the virtual cdrom vdev and tap minor for the domid */
   vdev = cdrom_vdev_of_domid(domid);
@@ -308,43 +423,44 @@ bool blktap_change_iso(const char *path, int domid)
     return false;
 
   /* Eject the disk */
-  cdrom_change(domid, vdev, "", "", NULL);
+  cdrom_change(domid, vdev, "", "", NULL, "");
 
   /* If the path is the empty string we're done. */
   if (*path == '\0')
     return true;
 
   /* See if there's other guests using the tapdev (we already ejected it) */
-  count = cdrom_count_and_print(tap_minor, 1, false);
+  shared = cdrom_tapdev_is_shared(tap_minor, domid);
 
   /* Inserting the new iso */
 
-  /* 1.: is there already a tapdev for that iso?? */
-  snprintf(tpath, sizeof(tpath), "aio:%s", path);
+  /* 1.: is there already a tapdev for that iso? */
+  snprintf(tapdisk_params, sizeof(tapdisk_params), "aio:%s", path);
   existing = find_tap_with_path(path);
   if (existing >= 0)
     {
       /* Destroy previous tapdev? */
-      if (count == 0)
+      if (!shared)
         cdrom_tap_destroy(tap_minor);
       /* Switch to the one we just found */
-      snprintf(tpath, sizeof(tpath), "/dev/xen/blktap-2/tapdev%d", existing);
+      snprintf(params, sizeof(params), "/dev/xen/blktap-2/tapdev%d", existing);
       snprintf(phys, sizeof(phys), "fe:%d", existing);
-      recreate(domid, vdev, tpath, "phy", phys, tpath);
+      recreate(domid, vdev, tapdisk_params, "phy", phys, params);
       return true;
     }
 
-  if (count == 0) {
+  if (!shared) {
+    snprintf(params, sizeof(params), "/dev/xen/blktap-2/tapdev%d", tap_minor);
     /* 2. We're the only one to use it, we can reuse the tapdev */
-    if (cdrom_tap_close_and_load(tap_minor, tpath, true))
-      cdrom_change(domid, vdev, path, "phy", NULL);
+    if (cdrom_tap_close_and_load(tap_minor, tapdisk_params, true))
+      cdrom_change(domid, vdev, params, "phy", NULL, tapdisk_params);
   } else {
     /* 3. We need to create a new tapdev */
-    if (tap_ctl_create_flags(tpath, &new_tpath, TAPDISK_MESSAGE_FLAG_RDONLY) != 0)
+    if (tap_ctl_create_flags(tapdisk_params, &new_params, TAPDISK_MESSAGE_FLAG_RDONLY) != 0)
       printf("tap_ctl_create_flags failed!!");
-    tap_minor = strtol(new_tpath + 24, NULL, 10);
+    tap_minor = strtol(new_params + 24, NULL, 10);
     snprintf(phys, sizeof(phys), "fe:%d", tap_minor);
-    recreate(domid, vdev, new_tpath, "phy", phys, tpath);
+    recreate(domid, vdev, tapdisk_params, "phy", phys, new_params);
   }
 
   return true;

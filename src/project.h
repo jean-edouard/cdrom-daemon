@@ -104,8 +104,13 @@ xcdbus_conn_t *g_xcbus;      /**< The global dbus (libxcdbus) handle, initialize
 
 bool  xenstore_be_write(xs_transaction_t trans, int domid, int vdev, char *node, const char *value, ...);
 bool  xenstore_fe_write(xs_transaction_t trans, int domid, int vdev, char *node, const char *value, ...);
+char *xenstore_dom_read(xs_transaction_t trans, int domid, char *node);
 char *xenstore_be_read(xs_transaction_t trans, int domid, int vdev, char *node);
 char *xenstore_fe_read(xs_transaction_t trans, int domid, int vdev, char *node);
+int   xenstore_be_watch(int domid, int vdev, char *node);
+int   xenstore_fe_watch(int domid, int vdev, char *node);
+int   xenstore_be_unwatch(int domid, int vdev, char *node);
+int   xenstore_fe_unwatch(int domid, int vdev, char *node);
 bool  xenstore_be_destroy(xs_transaction_t trans, int domid, int vdev);
 bool  xenstore_fe_destroy(xs_transaction_t trans, int domid, int vdev);
 bool  xenstore_mkdir_with_perms(xs_transaction_t trans, int owner, int reader, char *dir, ...);
