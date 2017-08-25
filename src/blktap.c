@@ -459,7 +459,7 @@ bool blktap_change_iso(const char *path, int domid)
     if (tap_ctl_create_flags(tapdisk_params, &new_params, TAPDISK_MESSAGE_FLAG_RDONLY) != 0)
       printf("tap_ctl_create_flags failed!!");
     tap_minor = strtol(new_params + 24, NULL, 10);
-    snprintf(phys, sizeof(phys), "fe:%d", tap_minor);
+    snprintf(phys, sizeof(phys), "fe:%x", tap_minor);
     recreate(domid, vdev, tapdisk_params, "phy", phys, new_params);
   }
 
